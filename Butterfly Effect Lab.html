@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Butterfly Effect Lab</title>
+<style>
+:root{--bg:#05070d;--panel:rgba(18,24,38,.88);--ink:#e8edf6;--mut:#8f9bb3;--acc:#5fd4ff;--bd:#2b3752;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);font:14px system-ui,-apple-system,Segoe UI,sans-serif}
+canvas.f{position:fixed;left:0;top:0;width:100%;height:100%;display:block}
+#c{touch-action:none;cursor:grab}
+#hud{position:fixed;top:calc(8px + env(safe-area-inset-top,0px));left:8px;background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:8px 10px;font-size:12px;color:var(--mut);pointer-events:none;line-height:1.45}
+#hud b{color:var(--ink);font-size:13px}
+#g{display:block;width:160px;height:58px;margin-top:4px}
+#bar{position:fixed;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom,0px));max-width:560px;margin:auto;background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:8px;backdrop-filter:blur(8px)}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+button{flex:1;min-width:56px;padding:9px 6px;border:1px solid var(--bd);border-radius:10px;background:transparent;color:var(--ink);font:inherit;font-weight:600;cursor:pointer}
+button.on{background:var(--acc);color:#05202b;border-color:var(--acc)}
+.sl{display:flex;align-items:center;gap:8px;margin-top:7px}
+.sl label{width:60px;color:var(--mut)}.sl input{flex:1;accent-color:var(--acc)}.sl output{width:64px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px}
+</style>
+</head>
+<body>
+<canvas class="f" id="tr"></canvas>
+<canvas class="f" id="c"></canvas>
+<div id="hud"><b>Butterfly Effect</b><br>160 double pendulums<br><span id="gap"></span><canvas id="g"></canvas>Drag to pose · release to swing</div>
+<div id="bar">
+  <div class="row">
+    <button id="play" class="on">⏸ Pause</button>
+    <button id="replay">Replay</button>
+    <button id="rand">Random</button>
+    <button id="arms" class="on">Arms</button>
+    <button id="trails" class="on">Trails</button>
+  </div>
+  <div class="sl"><label>Spread</label><input id="sp" type="range" min="0" max="100" value="57"><output id="spo"></output></div>
+  <div class="sl"><label>Speed</label><input id="sd" type="range" min="10" max="300" value="100"><output id="sdo">1.0×</output></div>
+</div>
+<script>
+const N=160,DT=0.004,G=9.81,$=id=>document.getElementById(id);
+const cv=$('c'),ctx=cv.getContext('2d'),tr=$('tr'),tctx=tr.getContext('2d'),gc=$('g'),gx=gc.getContext('2d');
+const th1=new Float64Array(N),th2=new Float64Array(N),w1=new Float64Array(N),w2=new Float64Array(N);
+const px=new Float64Array(N),py=new Float64Array(N);
+const cols=Array.from({length:N},(_,i)=>`hsl(${i/(N-1)*300},95%,62%)`);
+let W,H,dpr,ox,oy,u,b1=2.1,b2=2.4,t=0,acc=0,running=true,dragging=false,armsOn=true,trailsOn=true,havePrev=false,hist=[],frame=0;
+const spread=()=>Math.pow(10,-8+$('sp').value/100*7);
+const speed=()=>$('sd').value/100;
+
+function resize(){
+  dpr=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;
+  for(const [c,x] of [[cv,ctx],[tr,tctx]]){c.width=W*dpr;c.height=H*dpr;x.setTransform(dpr,0,0,dpr,0,0);}
+  gc.width=160*dpr;gc.height=58*dpr;gx.setTransform(dpr,0,0,dpr,0,0);
+  tctx.fillStyle='#05070d';tctx.fillRect(0,0,W,H);
+  ox=W/2;oy=H*.4;u=Math.max(40,Math.min(W*.22,(H*.6-150)/2,H*.17));havePrev=false;
+}
+function start(){
+  const e=spread();
+  for(let i=0;i<N;i++){th1[i]=b1+e*i/(N-1);th2[i]=b2;w1[i]=w2[i]=0;}
+  t=0;acc=0;hist=[];havePrev=false;tctx.fillStyle='#05070d';tctx.fillRect(0,0,W,H);
+  running=true;$('play').textContent='⏸ Pause';$('play').classList.add('on');
+}
+
+// double pendulum (m=1, L=1): angular accelerations
+let AA=0,BB=0;
+function accel(a,b,u_,v){
+  const d=a-b,s=Math.sin(d),c=Math.cos(d),den=3-Math.cos(2*d);
+  AA=(-3*G*Math.sin(a)-G*Math.sin(a-2*b)-2*s*(v*v+u_*u_*c))/den;
+  BB=(2*s*(2*u_*u_+2*G*Math.cos(a)+v*v*c))/den;
+}
+function stepAll(){
+  const h=DT,h2=h/2;
+  for(let i=0;i<N;i++){
+    const a=th1[i],b=th2[i],p=w1[i],q=w2[i];
+    accel(a,b,p,q);const k1u=AA,k1v=BB;
+    const a2=p+k1u*h2,b2_=q+k1v*h2;accel(a+p*h2,b+q*h2,a2,b2_);const k2u=AA,k2v=BB;
+    const a3=p+k2u*h2,b3=q+k2v*h2;accel(a+a2*h2,b+b2_*h2,a3,b3);const k3u=AA,k3v=BB;
+    const a4=p+k3u*h,b4=q+k3v*h;accel(a+a3*h,b+b3*h,a4,b4);const k4u=AA,k4v=BB;
+    th1[i]=a+h/6*(p+2*a2+2*a3+a4);th2[i]=b+h/6*(q+2*b2_+2*b3+b4);
+    w1[i]=p+h/6*(k1u+2*k2u+2*k3u+k4u);w2[i]=q+h/6*(k1v+2*k2v+2*k3v+k4v);
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  if(trailsOn){tctx.fillStyle='rgba(5,7,13,.08)';tctx.fillRect(0,0,W,H);}
+  else{tctx.fillStyle='#05070d';tctx.fillRect(0,0,W,H);havePrev=false;}
+  if(dragging){
+    const x1=ox+u*Math.sin(b1),y1=oy+u*Math.cos(b1),x2=x1+u*Math.sin(b2),y2=y1+u*Math.cos(b2);
+    ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(x1,y1,5,0,7);ctx.arc(x2,y2,6,0,7);ctx.fill();
+  } else {
+    if(armsOn){ctx.lineWidth=1;ctx.globalAlpha=.2;
+      for(let i=0;i<N;i++){const x1=ox+u*Math.sin(th1[i]),y1=oy+u*Math.cos(th1[i]);
+        ctx.strokeStyle=cols[i];ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(x1,y1);ctx.lineTo(x1+u*Math.sin(th2[i]),y1+u*Math.cos(th2[i]));ctx.stroke();}
+      ctx.globalAlpha=1;}
+    tctx.lineWidth=1.3;
+    for(let i=0;i<N;i++){
+      const x2=ox+u*(Math.sin(th1[i])+Math.sin(th2[i])),y2=oy+u*(Math.cos(th1[i])+Math.cos(th2[i]));
+      ctx.fillStyle=cols[i];ctx.beginPath();ctx.arc(x2,y2,2.4,0,7);ctx.fill();
+      if(trailsOn&&havePrev&&running){tctx.strokeStyle=cols[i];tctx.beginPath();tctx.moveTo(px[i],py[i]);tctx.lineTo(x2,y2);tctx.stroke();}
+      px[i]=x2;py[i]=y2;
+    }
+    havePrev=true;
+  }
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(ox,oy,4,0,7);ctx.fill();
+}
+
+function drawGraph(){
+  const w=160,h=58,win=20,t0=Math.max(0,t-win),lo=-9,hi=1.5;
+  gx.clearRect(0,0,w,h);gx.strokeStyle='rgba(143,155,179,.25)';gx.lineWidth=1;
+  for(let k=-8;k<=0;k+=2){const y=h-(k-lo)/(hi-lo)*h;gx.beginPath();gx.moveTo(0,y);gx.lineTo(w,y);gx.stroke();}
+  gx.strokeStyle='#5fd4ff';gx.lineWidth=1.5;gx.beginPath();let first=true;
+  for(const [tt,v] of hist){if(tt<t0)continue;const x=(tt-t0)/win*w,y=h-(Math.min(hi,Math.max(lo,v))-lo)/(hi-lo)*h;
+    if(first){gx.moveTo(x,y);first=false;}else gx.lineTo(x,y);}
+  gx.stroke();
+}
+function sample(){
+  const d=Math.hypot(th1[0]-th1[N-1],th2[0]-th2[N-1]);
+  hist.push([t,Math.log10(Math.max(d,1e-12))]);
+  if(hist.length>1200)hist.splice(0,200);
+  $('gap').textContent=`t = ${t.toFixed(1)} s · gap ${d.toExponential(1)} rad`;
+  drawGraph();
+}
+
+let last=performance.now();
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt=Math.min((now-last)/1000,.05);last=now;
+  if(running&&!dragging){acc+=dt*speed();let n=0;while(acc>=DT&&n<100){stepAll();acc-=DT;t+=DT;n++;}if(n===100)acc=0;
+    if(++frame%2===0)sample();}
+  draw();
+}
+
+// pose by dragging: two-link inverse kinematics so the tip follows the pointer
+function pose(e){
+  const x=(e.clientX-ox)/u,y=(e.clientY-oy)/u,d=Math.min(Math.max(Math.hypot(x,y),.05),1.999);
+  const phi=Math.atan2(x,y),al=Math.acos(d/2);b1=phi+al;b2=phi-al;
+}
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);dragging=true;pose(e);});
+cv.addEventListener('pointermove',e=>{if(dragging)pose(e);});
+const release=()=>{if(dragging){dragging=false;start();}};
+cv.addEventListener('pointerup',release);cv.addEventListener('pointercancel',release);
+
+$('play').onclick=()=>{running=!running;$('play').textContent=running?'⏸ Pause':'▶ Play';$('play').classList.toggle('on',running);};
+$('replay').onclick=start;
+$('rand').onclick=()=>{b1=(Math.random()<.5?-1:1)*(1.4+Math.random()*1.7);b2=(Math.random()*2-1)*Math.PI;start();};
+$('arms').onclick=()=>{armsOn=!armsOn;$('arms').classList.toggle('on',armsOn);};
+$('trails').onclick=()=>{trailsOn=!trailsOn;$('trails').classList.toggle('on',trailsOn);};
+$('sp').oninput=()=>{$('spo').textContent=spread().toExponential(0)+' rad';start();};
+$('sd').oninput=()=>{$('sdo').textContent=speed().toFixed(1)+'×';};
+addEventListener('resize',()=>{resize();});
+resize();$('spo').textContent=spread().toExponential(0)+' rad';start();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
